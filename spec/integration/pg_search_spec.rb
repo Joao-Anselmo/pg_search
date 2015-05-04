@@ -1021,6 +1021,179 @@ describe "an Active Record model which includes PgSearch" do
       end
     end
 
+    context "new tsvector column syntax" do
+
+      context "using a tsvector column and an association" do
+        with_model :Comment do
+          table do |t|
+            t.integer :post_id
+            t.string :body
+          end
+
+          model do
+            belongs_to :post
+          end
+        end
+
+        with_model :Post do
+          table do |t|
+            t.text 'content'
+            t.tsvector 'content_tsvector'
+          end
+
+          model do
+            include PgSearch
+            has_many :comments
+          end
+        end
+
+        let!(:expected) { Post.create!(content: 'phooey') }
+        let!(:unexpected) { Post.create!(content: 'longcat is looooooooong') }
+
+        before do
+          ActiveRecord::Base.connection.execute <<-SQL.strip_heredoc
+            UPDATE #{Post.quoted_table_name}
+            SET content_tsvector = to_tsvector('english'::regconfig, #{Post.quoted_table_name}."content")
+          SQL
+
+          expected.comments.create(body: 'commentone')
+          unexpected.comments.create(body: 'commentwo')
+
+          Post.pg_search_scope :search_by_content_with_tsvector,
+            :against => { content_tsvector: { tsvector_column: true } },
+            :associated_against => { comments: [:body] },
+            :using => {
+              :tsearch => {
+                :dictionary => 'english'
+              }
+            }
+        end
+
+        it "should find by the tsvector column" do
+          expect(Post.search_by_content_with_tsvector("phooey").map(&:id)).to eq([expected.id])
+        end
+
+        it "should find by the associated record" do
+          expect(Post.search_by_content_with_tsvector("commentone").map(&:id)).to eq([expected.id])
+        end
+
+        it 'should find by a combination of the two' do
+          expect(Post.search_by_content_with_tsvector("phooey commentone").map(&:id)).to eq([expected.id])
+        end
+      end
+
+      context 'using multiple tsvector columns' do
+        with_model :ModelWithTsvector do
+          model do
+            include PgSearch
+
+            pg_search_scope :search_by_multiple_tsvector_columns,
+              :against => {
+                content_tsvector: { tsvector_column: true },
+                message_tsvector: { tsvector_column: true },
+              },
+              :using => {
+                :tsearch => {
+                  :dictionary => 'english'
+                }
+              }
+          end
+        end
+
+        it 'concats tsvector columns' do
+          expected = "#{ModelWithTsvector.quoted_table_name}.\"content_tsvector\" || "\
+                     "#{ModelWithTsvector.quoted_table_name}.\"message_tsvector\""
+
+          expect(ModelWithTsvector.search_by_multiple_tsvector_columns("something").to_sql).to include(expected)
+        end
+      end
+
+      context 'using multiple tsvector columns with weight' do
+        with_model :ModelWithTsvector do
+          model do
+            include PgSearch
+
+            pg_search_scope :search_by_multiple_tsvector_columns,
+              :against => {
+                title_tsvector: { tsvector_column: true, weight: 'A' },
+                content_tsvector: { tsvector_column: true },
+                message_tsvector: { tsvector_column: true, weight: 'B' }
+              },
+              :using => {
+                :tsearch => {
+                  :dictionary => 'english'
+                }
+              }
+          end
+        end
+
+        it 'concats tsvector columns' do
+          expected = "setweight(#{ModelWithTsvector.quoted_table_name}.\"title_tsvector\", 'A') || "\
+                     "#{ModelWithTsvector.quoted_table_name}.\"content_tsvector\" || "\
+                     "setweight(#{ModelWithTsvector.quoted_table_name}.\"message_tsvector\", 'B')"
+
+          expect(ModelWithTsvector.search_by_multiple_tsvector_columns("something").to_sql).to include(expected)
+        end
+      end
+
+      context "using a tsvector column with" do
+        with_model :ModelWithTsvector do
+          table do |t|
+            t.text 'content'
+            t.tsvector 'content_tsvector'
+          end
+
+          model { include PgSearch }
+        end
+
+        let!(:expected) { ModelWithTsvector.create!(:content => 'tiling is grouty') }
+        let!(:unexpected) { ModelWithTsvector.create!(:content => 'longcat is looooooooong') }
+
+        before do
+          ActiveRecord::Base.connection.execute <<-SQL.strip_heredoc
+            UPDATE #{ModelWithTsvector.quoted_table_name}
+            SET content_tsvector = to_tsvector('english'::regconfig, #{ModelWithTsvector.quoted_table_name}."content")
+          SQL
+
+          ModelWithTsvector.pg_search_scope :search_by_content_with_tsvector,
+            :against => { content_tsvector: {tsvector_column: true} },
+            :using => {
+              :tsearch => {
+                :dictionary => 'english'
+              }
+            }
+        end
+
+        it "should not use to_tsvector in the query" do
+          expect(ModelWithTsvector.search_by_content_with_tsvector("tiles").to_sql).not_to match(/to_tsvector/)
+        end
+
+        it "should find the expected result" do
+          expect(ModelWithTsvector.search_by_content_with_tsvector("tiles").map(&:id)).to eq([expected.id])
+        end
+
+        context "when joining to a table with a column of the same name" do
+          with_model :AnotherModel do
+            table do |t|
+              t.string :content_tsvector # the type of the column doesn't matter
+              t.belongs_to :model_with_tsvector
+            end
+          end
+
+          before do
+            ModelWithTsvector.has_many :another_models
+          end
+
+          it "should refer to the tsvector column in the query unambiguously" do
+            expect {
+              ModelWithTsvector.joins(:another_models).search_by_content_with_tsvector("test").to_a
+            }.not_to raise_exception
+          end
+        end
+      end
+
+    end
+
     context "ignoring accents" do
       before do
         ModelWithPgSearch.pg_search_scope :search_title_without_accents,
