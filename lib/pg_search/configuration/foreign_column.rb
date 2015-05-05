@@ -13,11 +13,11 @@ module PgSearch
         Configuration.alias(@association.subselect_alias, @column_name)
       end
 
+      private
+
       def expression
         "#{@association.subselect_alias}.#{self.alias}"
       end
-
-      private
 
       def table_name
         @connection.quote_table_name(@association.table_name)

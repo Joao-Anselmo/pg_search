@@ -1101,8 +1101,8 @@ describe "an Active Record model which includes PgSearch" do
         end
 
         it 'concats tsvector columns' do
-          expected = "#{ModelWithTsvector.quoted_table_name}.\"content_tsvector\" || "\
-                     "#{ModelWithTsvector.quoted_table_name}.\"message_tsvector\""
+          expected = "coalesce(#{ModelWithTsvector.quoted_table_name}.\"content_tsvector\", '') || "\
+                     "coalesce(#{ModelWithTsvector.quoted_table_name}.\"message_tsvector\", '')"
 
           expect(ModelWithTsvector.search_by_multiple_tsvector_columns("something").to_sql).to include(expected)
         end
@@ -1128,9 +1128,9 @@ describe "an Active Record model which includes PgSearch" do
         end
 
         it 'concats tsvector columns' do
-          expected = "setweight(#{ModelWithTsvector.quoted_table_name}.\"title_tsvector\", 'A') || "\
-                     "#{ModelWithTsvector.quoted_table_name}.\"content_tsvector\" || "\
-                     "setweight(#{ModelWithTsvector.quoted_table_name}.\"message_tsvector\", 'B')"
+          expected = "setweight(coalesce(#{ModelWithTsvector.quoted_table_name}.\"title_tsvector\", ''), 'A') || "\
+                     "coalesce(#{ModelWithTsvector.quoted_table_name}.\"content_tsvector\", '') || "\
+                     "setweight(coalesce(#{ModelWithTsvector.quoted_table_name}.\"message_tsvector\", ''), 'B')"
 
           expect(ModelWithTsvector.search_by_multiple_tsvector_columns("something").to_sql).to include(expected)
         end
@@ -1156,7 +1156,7 @@ describe "an Active Record model which includes PgSearch" do
           SQL
 
           ModelWithTsvector.pg_search_scope :search_by_content_with_tsvector,
-            :against => { content_tsvector: {tsvector_column: true} },
+            :against => { content_tsvector: { tsvector_column: true } },
             :using => {
               :tsearch => {
                 :dictionary => 'english'
@@ -1188,6 +1188,67 @@ describe "an Active Record model which includes PgSearch" do
             expect {
               ModelWithTsvector.joins(:another_models).search_by_content_with_tsvector("test").to_a
             }.not_to raise_exception
+          end
+        end
+
+        context "when joining to a table with a tsvector column" do
+          with_model :AnotherModelWithTsvector do
+            table do |t|
+              t.text 'content'
+              t.tsvector 'content_tsvector'
+              t.belongs_to :model_with_tsvector
+            end
+          end
+
+          before do
+            ModelWithTsvector.has_many :another_model_with_tsvectors
+
+            ModelWithTsvector.pg_search_scope :search_by_content_with_tsvectors,
+              :against => { content_tsvector: { tsvector_column: true } },
+              :associated_against => {
+                another_model_with_tsvectors: {
+                  content_tsvector: { tsvector_column: true }
+                }
+              },
+              :using => {
+                :tsearch => {
+                  :dictionary => 'english'
+                }
+              }
+          end
+
+          it "should refer to each tsvector column in the query unambiguously" do
+            expect {
+              ModelWithTsvector.joins(:another_model_with_tsvectors).search_by_content_with_tsvectors("test").to_a
+            }.not_to raise_exception
+          end
+
+          it "should not use to_tsvector in the query" do
+            expect(ModelWithTsvector.search_by_content_with_tsvectors("tiles").to_sql).not_to match(/to_tsvector/)
+          end
+
+          it "should find the expected result" do
+            expect(ModelWithTsvector.search_by_content_with_tsvectors("tiles").map(&:id)).to eq([expected.id])
+          end
+
+          describe 'with associated records' do
+
+            before do
+              AnotherModelWithTsvector.create!(:content => 'monkeys like bananas', model_with_tsvector_id: expected.id)
+
+              ActiveRecord::Base.connection.execute <<-SQL.strip_heredoc
+                UPDATE #{AnotherModelWithTsvector.quoted_table_name}
+                SET content_tsvector = to_tsvector('english'::regconfig, #{AnotherModelWithTsvector.quoted_table_name}."content")
+              SQL
+            end
+
+            it "should not use to_tsvector in the query" do
+              expect(ModelWithTsvector.search_by_content_with_tsvectors("bananas").to_sql).not_to match(/to_tsvector/)
+            end
+
+            it "should find the expected result" do
+              expect(ModelWithTsvector.search_by_content_with_tsvectors("bananas").map(&:id)).to eq([expected.id])
+            end
           end
         end
       end

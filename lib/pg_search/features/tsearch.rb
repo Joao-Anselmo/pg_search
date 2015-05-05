@@ -120,7 +120,7 @@ module PgSearch
       def column_to_tsvector(search_column)
         tsvector =
           if search_column.tsvector_column
-            search_column.expression
+            search_column.to_sql
           else
             Arel::Nodes::NamedFunction.new(
               "to_tsvector",

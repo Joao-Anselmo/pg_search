@@ -23,11 +23,11 @@ module PgSearch
       end
 
       def to_sql
-        "coalesce(#{expression}::text, '')"
-      end
-
-      def expression
-        full_name
+        if tsvector_column
+          "coalesce(#{expression}, '')"
+        else
+          "coalesce(#{expression}::text, '')"
+        end
       end
 
       private
@@ -38,6 +38,10 @@ module PgSearch
 
       def column_name
         @connection.quote_column_name(@column_name)
+      end
+
+      def expression
+        full_name
       end
     end
   end
