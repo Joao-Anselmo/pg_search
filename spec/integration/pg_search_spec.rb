@@ -1253,6 +1253,80 @@ describe "an Active Record model which includes PgSearch" do
         end
       end
 
+      context "mixed with old syntax" do
+        with_model :ModelWithTsvector do
+          table do |t|
+            t.text 'content'
+            t.tsvector 'content_tsvector'
+          end
+
+          model { include PgSearch }
+        end
+
+        with_model :AnotherModelWithTsvector do
+          table do |t|
+            t.text 'content'
+            t.tsvector 'content_tsvector'
+            t.belongs_to :model_with_tsvector
+          end
+        end
+
+        let!(:expected) { ModelWithTsvector.create!(:content => 'tiling is grouty') }
+        let!(:unexpected) { ModelWithTsvector.create!(:content => 'longcat is looooooooong') }
+
+        before do
+          ModelWithTsvector.has_many :another_model_with_tsvectors
+
+          ModelWithTsvector.pg_search_scope :search_by_content_with_tsvectors,
+            :against => :content,
+            :associated_against => {
+              another_model_with_tsvectors: {
+                content_tsvector: { tsvector_column: true }
+              }
+            },
+            :using => {
+              :tsearch => {
+                :tsvector_column => 'content_tsvector',
+                :dictionary => 'english'
+              }
+            }
+
+          AnotherModelWithTsvector.create!(:content => 'monkeys like bananas', model_with_tsvector_id: expected.id)
+
+
+          ActiveRecord::Base.connection.execute <<-SQL.strip_heredoc
+            UPDATE #{ModelWithTsvector.quoted_table_name}
+            SET content_tsvector = to_tsvector('english'::regconfig, #{ModelWithTsvector.quoted_table_name}."content")
+          SQL
+
+          ActiveRecord::Base.connection.execute <<-SQL.strip_heredoc
+            UPDATE #{AnotherModelWithTsvector.quoted_table_name}
+            SET content_tsvector = to_tsvector('english'::regconfig, #{AnotherModelWithTsvector.quoted_table_name}."content")
+          SQL
+        end
+
+        it "should refer to each tsvector column in the query unambiguously" do
+          expect {
+            ModelWithTsvector.joins(:another_model_with_tsvectors).search_by_content_with_tsvectors("test").to_a
+          }.not_to raise_exception
+        end
+
+        it "should not use to_tsvector in the query" do
+          expect(ModelWithTsvector.search_by_content_with_tsvectors("tiles").to_sql).not_to match(/to_tsvector/)
+        end
+
+        it "should find the expected result" do
+          expect(ModelWithTsvector.search_by_content_with_tsvectors("tiles").map(&:id)).to eq([expected.id])
+        end
+
+        it "should not use to_tsvector in the query" do
+          expect(ModelWithTsvector.search_by_content_with_tsvectors("bananas").to_sql).not_to match(/to_tsvector/)
+        end
+
+        it "should find the expected result" do
+          expect(ModelWithTsvector.search_by_content_with_tsvectors("bananas").map(&:id)).to eq([expected.id])
+        end
+      end
     end
 
     context "ignoring accents" do
